@@ -2,24 +2,54 @@
 #include <string>
 #include <curl/curl.h>
 
-using namespace std;
+struct TelemetryData
+{
+    std::string truckId;
+    double speed;
+    int rpm;
+    double fuel;
+    int gear;
+};
 
-int main()
+size_t writeCallback(
+    char* contents,
+    size_t size,
+    size_t nmemb,
+    void* userData
+)
+{
+    const size_t totalSize = size * nmemb;
+
+    auto* response = static_cast<std::string*>(userData);
+    response->append(contents, totalSize);
+
+    return totalSize;
+}
+
+std::string toJson(const TelemetryData& telemetry)
+{
+    return
+        "{"
+        "\"truckId\":\"" + telemetry.truckId + "\","
+        "\"speed\":" + std::to_string(telemetry.speed) + ","
+        "\"rpm\":" + std::to_string(telemetry.rpm) + ","
+        "\"fuel\":" + std::to_string(telemetry.fuel) + ","
+        "\"gear\":" + std::to_string(telemetry.gear) +
+        "}";
+}
+
+bool sendTelemetry(const TelemetryData& telemetry)
 {
     CURL* curl = curl_easy_init();
 
-    if (!curl) {
-        cout << "libcurl initialization failed." << endl;
-        return 1;
+    if (!curl)
+    {
+        std::cerr << "libcurl initialization failed." << std::endl;
+        return false;
     }
 
-    string json = R"({
-        "truckId": "TRUCK-001",
-        "speed": 82.4,
-        "rpm": 1450,
-        "fuel": 312.8,
-        "gear": 8
-    })";
+    const std::string json = toJson(telemetry);
+    std::string responseBody;
 
     curl_slist* headers = nullptr;
     headers = curl_slist_append(
@@ -45,33 +75,119 @@ int main()
         json.c_str()
     );
 
-    CURLcode result = curl_easy_perform(curl);
-    long httpCode = 0;
-
-    curl_easy_getinfo(
+    curl_easy_setopt(
         curl,
-        CURLINFO_RESPONSE_CODE,
-        &httpCode
+        CURLOPT_POSTFIELDSIZE,
+        static_cast<long>(json.size())
     );
 
-    if (result != CURLE_OK) {
-        cout << "Request failed: "
+    curl_easy_setopt(
+        curl,
+        CURLOPT_WRITEFUNCTION,
+        writeCallback
+    );
+
+    curl_easy_setopt(
+        curl,
+        CURLOPT_WRITEDATA,
+        &responseBody
+    );
+
+    curl_easy_setopt(
+        curl,
+        CURLOPT_CONNECTTIMEOUT,
+        5L
+    );
+
+    curl_easy_setopt(
+        curl,
+        CURLOPT_TIMEOUT,
+        10L
+    );
+
+    std::cout
+        << "Sending JSON: "
+        << json
+        << std::endl;
+
+    const CURLcode result = curl_easy_perform(curl);
+
+    long httpCode = 0;
+
+    if (result == CURLE_OK)
+    {
+        curl_easy_getinfo(
+            curl,
+            CURLINFO_RESPONSE_CODE,
+            &httpCode
+        );
+    }
+
+    bool success = false;
+
+    if (result != CURLE_OK)
+    {
+        std::cerr
+            << "Request failed: "
             << curl_easy_strerror(result)
-            << endl;
+            << std::endl;
     }
-    else if (httpCode >= 200 && httpCode < 300) {
-        cout << "Telemetry sent successfully. HTTP "
+    else if (httpCode >= 200 && httpCode < 300)
+    {
+        std::cout
+            << "Telemetry sent successfully. HTTP "
             << httpCode
-            << endl;
+            << std::endl;
+
+        success = true;
     }
-    else {
-        cout << "Backend returned HTTP "
+    else
+    {
+        std::cerr
+            << "Backend returned HTTP "
             << httpCode
-            << endl;
+            << std::endl;
+
+        if (!responseBody.empty())
+        {
+            std::cerr
+                << "Response: "
+                << responseBody
+                << std::endl;
+        }
     }
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    return 0;
+    return success;
+}
+
+int main()
+{
+    const CURLcode globalInitResult =
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    if (globalInitResult != CURLE_OK)
+    {
+        std::cerr
+            << "libcurl global initialization failed."
+            << std::endl;
+
+        return 1;
+    }
+
+    const TelemetryData telemetry{
+        "TRUCK-001",
+        82.4,
+        1450,
+        312.8,
+        8
+    };
+
+    const bool success = sendTelemetry(telemetry);
+
+    curl_global_cleanup();
+
+    return success ? 0 : 1;
 }
