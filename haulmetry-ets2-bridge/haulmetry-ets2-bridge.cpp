@@ -1,6 +1,7 @@
 ﻿#include <iostream>
 #include <string>
 #include <curl/curl.h>
+#include <cstdint>
 
 struct TelemetryData
 {
@@ -9,6 +10,7 @@ struct TelemetryData
     int rpm;
     double fuel;
     int gear;
+    std::int64_t sequenceNumber;
 };
 
 size_t writeCallback(
@@ -34,10 +36,10 @@ std::string toJson(const TelemetryData& telemetry)
         "\"speed\":" + std::to_string(telemetry.speed) + ","
         "\"rpm\":" + std::to_string(telemetry.rpm) + ","
         "\"fuel\":" + std::to_string(telemetry.fuel) + ","
-        "\"gear\":" + std::to_string(telemetry.gear) +
+        "\"gear\":" + std::to_string(telemetry.gear) + ","
+        "\"sequenceNumber\":" + std::to_string(telemetry.sequenceNumber) +
         "}";
 }
-
 bool sendTelemetry(const TelemetryData& telemetry)
 {
     CURL* curl = curl_easy_init();
@@ -177,17 +179,32 @@ int main()
         return 1;
     }
 
-    const TelemetryData telemetry{
-        "TRUCK-001",
-        82.4,
-        1450,
-        312.8,
-        8
-    };
+    std::int64_t sequenceNumber = 1;
 
-    const bool success = sendTelemetry(telemetry);
+    for (int i = 0; i < 3; i++)
+    {
+        const TelemetryData telemetry{
+            "TRUCK-001",
+            82.4,
+            1450,
+            312.8,
+            8,
+            sequenceNumber
+        };
+
+        const bool success =
+            sendTelemetry(telemetry);
+
+        if (!success)
+        {
+            curl_global_cleanup();
+            return 1;
+        }
+
+        sequenceNumber++;
+    }
 
     curl_global_cleanup();
 
-    return success ? 0 : 1;
-}
+    return 0;
+}   
