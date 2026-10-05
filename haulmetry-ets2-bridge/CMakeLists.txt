@@ -1,8 +1,54 @@
 find_package(CURL CONFIG REQUIRED)
 
-add_executable(haulmetry-ets2-bridge
+# Mevcut HTTP bridge executable
+add_executable(
+    haulmetry-ets2-bridge
     "haulmetry-ets2-bridge.cpp"
     "haulmetry-ets2-bridge.h"
 )
-target_link_libraries(haulmetry-ets2-bridge PRIVATE CURL::libcurl)
-target_compile_features(haulmetry-ets2-bridge PRIVATE cxx_std_20)
+
+target_link_libraries(
+    haulmetry-ets2-bridge
+    PRIVATE
+    CURL::libcurl
+)
+
+target_compile_features(
+    haulmetry-ets2-bridge
+    PRIVATE
+    cxx_std_20
+)
+
+
+# SCS SDK include klasörünün gerçek yolu
+get_filename_component(
+    SCS_SDK_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../external/scs-sdk/include"
+    ABSOLUTE
+)
+
+message(
+    STATUS
+    "SCS SDK include directory: ${SCS_SDK_INCLUDE_DIR}"
+)
+
+
+# ETS2 tarafýndan yüklenecek plugin DLL
+add_library(
+    haulmetry-scs-plugin
+    SHARED
+    "haulmetry-scs-plugin.cpp"
+    "haulmetry-scs-plugin.def"
+)
+
+target_include_directories(
+    haulmetry-scs-plugin
+    PRIVATE
+    "${SCS_SDK_INCLUDE_DIR}"
+)
+
+target_compile_features(
+    haulmetry-scs-plugin
+    PRIVATE
+    cxx_std_20
+)
