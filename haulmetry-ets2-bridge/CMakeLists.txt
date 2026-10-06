@@ -5,7 +5,7 @@ add_executable(
     haulmetry-ets2-bridge
     "haulmetry-ets2-bridge.cpp"
     "haulmetry-ets2-bridge.h"
-)
+ "telemetry-model.h")
 
 target_link_libraries(
     haulmetry-ets2-bridge
@@ -39,7 +39,7 @@ add_library(
     SHARED
     "haulmetry-scs-plugin.cpp"
     "haulmetry-scs-plugin.def"
-)
+ "telemetry-model.h")
 
 target_include_directories(
     haulmetry-scs-plugin
