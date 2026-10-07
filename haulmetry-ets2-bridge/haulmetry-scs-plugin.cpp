@@ -2,11 +2,16 @@
 #include "eurotrucks2/scssdk_telemetry_eut2.h"
 
 #include "telemetry-model.h"
+#include "telemetry-wire.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 
 
 // ==================================================
@@ -30,13 +35,26 @@ static LiveTelemetry telemetry;
 
 static scs_log_t gameLog = nullptr;
 
-static auto lastLogTime =
+static auto lastSendTime =
 std::chrono::steady_clock::now();
 
 static std::int64_t sequenceNumber = 1;
 
 static constexpr const char* TRUCK_ID =
 "TRUCK-001";
+
+static constexpr unsigned short UDP_PORT =
+49000;
+
+
+// ==================================================
+// UDP state
+// ==================================================
+
+static SOCKET udpSocket =
+INVALID_SOCKET;
+
+static sockaddr_in bridgeAddress{};
 
 
 // ==================================================
@@ -68,6 +86,14 @@ TelemetryData mapTelemetry(
     std::int64_t sequence
 );
 
+bool initializeUdp();
+
+void shutdownUdp();
+
+bool sendTelemetryToBridge(
+    const TelemetryData& telemetryData
+);
+
 
 // ==================================================
 // Float channel callback
@@ -88,7 +114,8 @@ SCSAPI_VOID storeFloat(
     auto* target =
         static_cast<float*>(context);
 
-    *target = value->value_float.value;
+    *target =
+        value->value_float.value;
 }
 
 
@@ -111,12 +138,13 @@ SCSAPI_VOID storeS32(
     auto* target =
         static_cast<scs_s32_t*>(context);
 
-    *target = value->value_s32.value;
+    *target =
+        value->value_s32.value;
 }
 
 
 // ==================================================
-// Map raw SCS telemetry to Haulmetry telemetry model
+// Map SCS telemetry -> Haulmetry model
 // ==================================================
 
 TelemetryData mapTelemetry(
@@ -124,18 +152,17 @@ TelemetryData mapTelemetry(
     const std::int64_t sequence
 )
 {
-    TelemetryData mappedTelemetry
+    return TelemetryData
     {
         TRUCK_ID,
 
-        // SCS gives speed in m/s.
-        // Backend expects km/h and a non-negative speed value.
+        // SCS -> m/s
+        // Backend -> non-negative km/h
         std::fabs(
-            static_cast<double>(source.speed) * 3.6
+            static_cast<double>(source.speed)
+            * 3.6
         ),
 
-        // SCS RPM is float.
-        // Backend TelemetryRequest expects int.
         static_cast<int>(
             std::lround(source.rpm)
         ),
@@ -150,8 +177,139 @@ TelemetryData mapTelemetry(
 
         sequence
     };
+}
 
-    return mappedTelemetry;
+
+// ==================================================
+// UDP initialization
+// ==================================================
+
+bool initializeUdp()
+{
+    WSADATA wsaData{};
+
+    const int startupResult =
+        WSAStartup(
+            MAKEWORD(2, 2),
+            &wsaData
+        );
+
+
+    if (startupResult != 0)
+    {
+        return false;
+    }
+
+
+    udpSocket =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            IPPROTO_UDP
+        );
+
+
+    if (udpSocket == INVALID_SOCKET)
+    {
+        WSACleanup();
+
+        return false;
+    }
+
+
+    bridgeAddress = {};
+
+    bridgeAddress.sin_family =
+        AF_INET;
+
+    bridgeAddress.sin_port =
+        htons(UDP_PORT);
+
+
+    const int addressResult =
+        InetPtonA(
+            AF_INET,
+            "127.0.0.1",
+            &bridgeAddress.sin_addr
+        );
+
+
+    if (addressResult != 1)
+    {
+        closesocket(udpSocket);
+
+        udpSocket =
+            INVALID_SOCKET;
+
+        WSACleanup();
+
+        return false;
+    }
+
+
+    return true;
+}
+
+
+// ==================================================
+// UDP shutdown
+// ==================================================
+
+void shutdownUdp()
+{
+    if (udpSocket != INVALID_SOCKET)
+    {
+        closesocket(
+            udpSocket
+        );
+
+        udpSocket =
+            INVALID_SOCKET;
+    }
+
+
+    WSACleanup();
+}
+
+
+// ==================================================
+// Send TelemetryData -> bridge EXE
+// ==================================================
+
+bool sendTelemetryToBridge(
+    const TelemetryData& telemetryData
+)
+{
+    if (udpSocket == INVALID_SOCKET)
+    {
+        return false;
+    }
+
+
+    const std::string payload =
+        serializeTelemetry(
+            telemetryData
+        );
+
+
+    const int sendResult =
+        sendto(
+            udpSocket,
+            payload.c_str(),
+            static_cast<int>(
+                payload.size()
+                ),
+            0,
+            reinterpret_cast<
+            const sockaddr*
+            >(
+                &bridgeAddress
+                ),
+            sizeof(bridgeAddress)
+        );
+
+
+    return sendResult != SOCKET_ERROR;
 }
 
 
@@ -169,18 +327,23 @@ SCSAPI_RESULT scs_telemetry_init(
         return SCS_RESULT_unsupported;
     }
 
+
     if (params == nullptr)
     {
         return SCS_RESULT_generic_error;
     }
 
+
     const auto* versionParams =
         static_cast<
         const scs_telemetry_init_params_v100_t*
-        >(params);
+        >(
+            params
+            );
 
 
-    gameLog = versionParams->common.log;
+    gameLog =
+        versionParams->common.log;
 
 
     if (gameLog == nullptr)
@@ -192,6 +355,27 @@ SCSAPI_RESULT scs_telemetry_init(
     gameLog(
         SCS_LOG_TYPE_message,
         "Haulmetry telemetry plugin initialized."
+    );
+
+
+    // ==================================================
+    // UDP
+    // ==================================================
+
+    if (!initializeUdp())
+    {
+        gameLog(
+            SCS_LOG_TYPE_error,
+            "Haulmetry could not initialize UDP transport."
+        );
+
+        return SCS_RESULT_generic_error;
+    }
+
+
+    gameLog(
+        SCS_LOG_TYPE_message,
+        "Haulmetry UDP transport initialized."
     );
 
 
@@ -209,12 +393,15 @@ SCSAPI_RESULT scs_telemetry_init(
             &telemetry.speed
         );
 
+
     if (speedResult != SCS_RESULT_ok)
     {
         gameLog(
             SCS_LOG_TYPE_error,
             "Haulmetry could not register speed channel."
         );
+
+        shutdownUdp();
 
         return SCS_RESULT_generic_error;
     }
@@ -234,12 +421,15 @@ SCSAPI_RESULT scs_telemetry_init(
             &telemetry.rpm
         );
 
+
     if (rpmResult != SCS_RESULT_ok)
     {
         gameLog(
             SCS_LOG_TYPE_error,
             "Haulmetry could not register RPM channel."
         );
+
+        shutdownUdp();
 
         return SCS_RESULT_generic_error;
     }
@@ -259,12 +449,15 @@ SCSAPI_RESULT scs_telemetry_init(
             &telemetry.fuel
         );
 
+
     if (fuelResult != SCS_RESULT_ok)
     {
         gameLog(
             SCS_LOG_TYPE_error,
             "Haulmetry could not register fuel channel."
         );
+
+        shutdownUdp();
 
         return SCS_RESULT_generic_error;
     }
@@ -284,6 +477,7 @@ SCSAPI_RESULT scs_telemetry_init(
             &telemetry.gear
         );
 
+
     if (gearResult != SCS_RESULT_ok)
     {
         gameLog(
@@ -291,12 +485,14 @@ SCSAPI_RESULT scs_telemetry_init(
             "Haulmetry could not register gear channel."
         );
 
+        shutdownUdp();
+
         return SCS_RESULT_generic_error;
     }
 
 
     // ==================================================
-    // FRAME END EVENT
+    // FRAME END
     // ==================================================
 
     const scs_result_t frameEndResult =
@@ -306,12 +502,15 @@ SCSAPI_RESULT scs_telemetry_init(
             nullptr
         );
 
+
     if (frameEndResult != SCS_RESULT_ok)
     {
         gameLog(
             SCS_LOG_TYPE_error,
             "Haulmetry could not register frame_end event."
         );
+
+        shutdownUdp();
 
         return SCS_RESULT_generic_error;
     }
@@ -341,6 +540,10 @@ SCSAPI_VOID scs_telemetry_shutdown(void)
         );
     }
 
+
+    shutdownUdp();
+
+
     gameLog = nullptr;
 }
 
@@ -369,24 +572,34 @@ SCSAPI_VOID telemetryFrameEnd(
         std::chrono::duration_cast<
         std::chrono::seconds
         >(
-            now - lastLogTime
+            now - lastSendTime
         );
 
 
-    // SCS may call frame_end many times per second.
-    // For now, create one mapped snapshot per second.
+    // SCS calls this callback many times per second.
+    // We currently send one telemetry sample per second.
     if (elapsed.count() < 1)
     {
         return;
     }
 
 
-    lastLogTime = now;
+    lastSendTime =
+        now;
 
 
-    // ==================================================
-    // LiveTelemetry -> TelemetryData
-    // ==================================================
+    // During game startup the SDK may initially expose
+    // zero-filled telemetry before vehicle data is ready.
+    if (
+        telemetry.speed == 0.0f &&
+        telemetry.rpm == 0.0f &&
+        telemetry.fuel == 0.0f &&
+        telemetry.gear == 0
+        )
+    {
+        return;
+    }
+
 
     const TelemetryData mappedTelemetry =
         mapTelemetry(
@@ -396,16 +609,38 @@ SCSAPI_VOID telemetryFrameEnd(
 
 
     // ==================================================
-    // Log mapped telemetry
+    // Send to bridge
+    // ==================================================
+
+    const bool sent =
+        sendTelemetryToBridge(
+            mappedTelemetry
+        );
+
+
+    if (!sent)
+    {
+        gameLog(
+            SCS_LOG_TYPE_error,
+            "Haulmetry failed to send telemetry to bridge."
+        );
+
+        return;
+    }
+
+
+    // ==================================================
+    // Temporary diagnostic log
     // ==================================================
 
     char buffer[512];
+
 
     std::snprintf(
         buffer,
         sizeof(buffer),
 
-        "Haulmetry MAPPED | "
+        "Haulmetry SENT | "
         "Truck: %s | "
         "Speed: %.1f km/h | "
         "RPM: %d | "
@@ -430,6 +665,5 @@ SCSAPI_VOID telemetryFrameEnd(
     );
 
 
-    // Next telemetry snapshot gets the next sequence number.
     sequenceNumber++;
 }

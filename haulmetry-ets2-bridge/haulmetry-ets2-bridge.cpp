@@ -1,17 +1,21 @@
-﻿#include <iostream>
-#include <string>
-#include <curl/curl.h>
-#include <cstdint>
+﻿#include "telemetry-model.h"
+#include "telemetry-wire.h"
 
-struct TelemetryData
-{
-    std::string truckId;
-    double speed;
-    int rpm;
-    double fuel;
-    int gear;
-    std::int64_t sequenceNumber;
-};
+#include <curl/curl.h>
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#include <iostream>
+#include <string>
+
+
+static constexpr unsigned short UDP_PORT = 49000;
+
+
+// ==================================================
+// HTTP response callback
+// ==================================================
 
 size_t writeCallback(
     char* contents,
@@ -20,15 +24,28 @@ size_t writeCallback(
     void* userData
 )
 {
-    const size_t totalSize = size * nmemb;
+    const size_t totalSize =
+        size * nmemb;
 
-    auto* response = static_cast<std::string*>(userData);
-    response->append(contents, totalSize);
+    auto* response =
+        static_cast<std::string*>(userData);
+
+    response->append(
+        contents,
+        totalSize
+    );
 
     return totalSize;
 }
 
-std::string toJson(const TelemetryData& telemetry)
+
+// ==================================================
+// TelemetryData -> backend JSON
+// ==================================================
+
+std::string toJson(
+    const TelemetryData& telemetry
+)
 {
     return
         "{"
@@ -37,27 +54,47 @@ std::string toJson(const TelemetryData& telemetry)
         "\"rpm\":" + std::to_string(telemetry.rpm) + ","
         "\"fuel\":" + std::to_string(telemetry.fuel) + ","
         "\"gear\":" + std::to_string(telemetry.gear) + ","
-        "\"sequenceNumber\":" + std::to_string(telemetry.sequenceNumber) +
+        "\"sequenceNumber\":" +
+        std::to_string(telemetry.sequenceNumber) +
         "}";
 }
-bool sendTelemetry(const TelemetryData& telemetry)
-{
-    CURL* curl = curl_easy_init();
 
-    if (!curl)
+
+// ==================================================
+// Send telemetry to Spring Boot
+// ==================================================
+
+bool sendTelemetry(
+    const TelemetryData& telemetry
+)
+{
+    CURL* curl =
+        curl_easy_init();
+
+    if (curl == nullptr)
     {
-        std::cerr << "libcurl initialization failed." << std::endl;
+        std::cerr
+            << "libcurl initialization failed."
+            << std::endl;
+
         return false;
     }
 
-    const std::string json = toJson(telemetry);
+
+    const std::string json =
+        toJson(telemetry);
+
     std::string responseBody;
 
+
     curl_slist* headers = nullptr;
-    headers = curl_slist_append(
-        headers,
-        "Content-Type: application/json"
-    );
+
+    headers =
+        curl_slist_append(
+            headers,
+            "Content-Type: application/json"
+        );
+
 
     curl_easy_setopt(
         curl,
@@ -80,7 +117,9 @@ bool sendTelemetry(const TelemetryData& telemetry)
     curl_easy_setopt(
         curl,
         CURLOPT_POSTFIELDSIZE,
-        static_cast<long>(json.size())
+        static_cast<long>(
+            json.size()
+            )
     );
 
     curl_easy_setopt(
@@ -95,26 +134,27 @@ bool sendTelemetry(const TelemetryData& telemetry)
         &responseBody
     );
 
+    // Backend is local.
+    // We intentionally keep the timeouts short.
     curl_easy_setopt(
         curl,
         CURLOPT_CONNECTTIMEOUT,
-        5L
+        1L
     );
 
     curl_easy_setopt(
         curl,
         CURLOPT_TIMEOUT,
-        10L
+        2L
     );
 
-    std::cout
-        << "Sending JSON: "
-        << json
-        << std::endl;
 
-    const CURLcode result = curl_easy_perform(curl);
+    const CURLcode result =
+        curl_easy_perform(curl);
+
 
     long httpCode = 0;
+
 
     if (result == CURLE_OK)
     {
@@ -125,20 +165,38 @@ bool sendTelemetry(const TelemetryData& telemetry)
         );
     }
 
+
     bool success = false;
+
 
     if (result != CURLE_OK)
     {
         std::cerr
-            << "Request failed: "
+            << "HTTP request failed: "
             << curl_easy_strerror(result)
             << std::endl;
     }
-    else if (httpCode >= 200 && httpCode < 300)
+    else if (
+        httpCode >= 200 &&
+        httpCode < 300
+        )
     {
         std::cout
-            << "Telemetry sent successfully. HTTP "
+            << "HTTP "
             << httpCode
+            << " | "
+            << telemetry.truckId
+            << " | speed="
+            << telemetry.speed
+            << " km/h"
+            << " | rpm="
+            << telemetry.rpm
+            << " | fuel="
+            << telemetry.fuel
+            << " | gear="
+            << telemetry.gear
+            << " | sequence="
+            << telemetry.sequenceNumber
             << std::endl;
 
         success = true;
@@ -148,6 +206,8 @@ bool sendTelemetry(const TelemetryData& telemetry)
         std::cerr
             << "Backend returned HTTP "
             << httpCode
+            << " | sequence="
+            << telemetry.sequenceNumber
             << std::endl;
 
         if (!responseBody.empty())
@@ -159,18 +219,32 @@ bool sendTelemetry(const TelemetryData& telemetry)
         }
     }
 
+
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
 
     return success;
 }
 
+
+// ==================================================
+// Main bridge process
+// ==================================================
+
 int main()
 {
-    const CURLcode globalInitResult =
-        curl_global_init(CURL_GLOBAL_DEFAULT);
+    // ----------------------------------------------
+    // Initialize libcurl
+    // ----------------------------------------------
 
-    if (globalInitResult != CURLE_OK)
+    const CURLcode curlResult =
+        curl_global_init(
+            CURL_GLOBAL_DEFAULT
+        );
+
+
+    if (curlResult != CURLE_OK)
     {
         std::cerr
             << "libcurl global initialization failed."
@@ -179,32 +253,180 @@ int main()
         return 1;
     }
 
-    std::int64_t sequenceNumber = 1;
 
-    for (int i = 0; i < 3; i++)
+    // ----------------------------------------------
+    // Initialize Winsock
+    // ----------------------------------------------
+
+    WSADATA wsaData{};
+
+    const int wsaResult =
+        WSAStartup(
+            MAKEWORD(2, 2),
+            &wsaData
+        );
+
+
+    if (wsaResult != 0)
     {
-        const TelemetryData telemetry{
-            "TRUCK-001",
-            82.4,
-            1450,
-            312.8,
-            8,
-            sequenceNumber
-        };
+        std::cerr
+            << "WSAStartup failed: "
+            << wsaResult
+            << std::endl;
 
-        const bool success =
-            sendTelemetry(telemetry);
+        curl_global_cleanup();
 
-        if (!success)
+        return 1;
+    }
+
+
+    // ----------------------------------------------
+    // Create UDP socket
+    // ----------------------------------------------
+
+    SOCKET udpSocket =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            IPPROTO_UDP
+        );
+
+
+    if (udpSocket == INVALID_SOCKET)
+    {
+        std::cerr
+            << "Could not create UDP socket."
+            << std::endl;
+
+        WSACleanup();
+        curl_global_cleanup();
+
+        return 1;
+    }
+
+
+    sockaddr_in address{};
+
+    address.sin_family = AF_INET;
+    address.sin_port = htons(UDP_PORT);
+
+    InetPtonA(
+        AF_INET,
+        "127.0.0.1",
+        &address.sin_addr
+    );
+
+
+    // ----------------------------------------------
+    // Bind to localhost:49000
+    // ----------------------------------------------
+
+    const int bindResult =
+        bind(
+            udpSocket,
+            reinterpret_cast<sockaddr*>(
+                &address
+                ),
+            sizeof(address)
+        );
+
+
+    if (bindResult == SOCKET_ERROR)
+    {
+        std::cerr
+            << "Could not bind UDP socket to port "
+            << UDP_PORT
+            << "."
+            << std::endl;
+
+        closesocket(udpSocket);
+        WSACleanup();
+        curl_global_cleanup();
+
+        return 1;
+    }
+
+
+    std::cout
+        << "Haulmetry bridge started."
+        << std::endl;
+
+    std::cout
+        << "Listening on 127.0.0.1:"
+        << UDP_PORT
+        << std::endl;
+
+    std::cout
+        << "Waiting for ETS2 telemetry..."
+        << std::endl;
+
+
+    // ----------------------------------------------
+    // Receive telemetry continuously
+    // ----------------------------------------------
+
+    while (true)
+    {
+        char buffer[1024]{};
+
+
+        const int receivedBytes =
+            recvfrom(
+                udpSocket,
+                buffer,
+                sizeof(buffer),
+                0,
+                nullptr,
+                nullptr
+            );
+
+
+        if (receivedBytes == SOCKET_ERROR)
         {
-            curl_global_cleanup();
-            return 1;
+            std::cerr
+                << "UDP receive failed."
+                << std::endl;
+
+            continue;
         }
 
-        sequenceNumber++;
+
+        const std::string payload(
+            buffer,
+            receivedBytes
+        );
+
+
+        TelemetryData telemetry{};
+
+
+        if (!deserializeTelemetry(
+            payload,
+            telemetry
+        ))
+        {
+            std::cerr
+                << "Invalid telemetry packet: "
+                << payload
+                << std::endl;
+
+            continue;
+        }
+
+
+        sendTelemetry(
+            telemetry
+        );
     }
+
+
+    // Normally unreachable in this first version.
+    closesocket(udpSocket);
+
+    WSACleanup();
 
     curl_global_cleanup();
 
+
     return 0;
-}   
+}

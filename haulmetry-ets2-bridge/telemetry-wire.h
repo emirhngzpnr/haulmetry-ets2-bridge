@@ -1,0 +1,72 @@
+#pragma once
+
+#include "telemetry-model.h"
+
+#include <string>
+#include <sstream>
+
+
+inline std::string serializeTelemetry(
+    const TelemetryData& telemetry
+)
+{
+    return
+        telemetry.truckId + "|" +
+        std::to_string(telemetry.speed) + "|" +
+        std::to_string(telemetry.rpm) + "|" +
+        std::to_string(telemetry.fuel) + "|" +
+        std::to_string(telemetry.gear) + "|" +
+        std::to_string(telemetry.sequenceNumber);
+}
+
+
+inline bool deserializeTelemetry(
+    const std::string& payload,
+    TelemetryData& telemetry
+)
+{
+    std::istringstream stream(payload);
+
+    std::string truckId;
+    std::string speed;
+    std::string rpm;
+    std::string fuel;
+    std::string gear;
+    std::string sequenceNumber;
+
+
+    if (!std::getline(stream, truckId, '|') ||
+        !std::getline(stream, speed, '|') ||
+        !std::getline(stream, rpm, '|') ||
+        !std::getline(stream, fuel, '|') ||
+        !std::getline(stream, gear, '|') ||
+        !std::getline(stream, sequenceNumber))
+    {
+        return false;
+    }
+
+
+    if (truckId.empty())
+    {
+        return false;
+    }
+
+
+    try
+    {
+        telemetry.truckId = truckId;
+        telemetry.speed = std::stod(speed);
+        telemetry.rpm = std::stoi(rpm);
+        telemetry.fuel = std::stod(fuel);
+        telemetry.gear = std::stoi(gear);
+        telemetry.sequenceNumber =
+            std::stoll(sequenceNumber);
+    }
+    catch (...)
+    {
+        return false;
+    }
+
+
+    return true;
+}
