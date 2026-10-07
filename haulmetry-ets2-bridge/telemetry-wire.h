@@ -2,9 +2,23 @@
 
 #include "telemetry-model.h"
 
-#include <string>
 #include <sstream>
+#include <string>
 
+
+inline constexpr const char* CONTROL_PAUSED =
+"CONTROL|PAUSED";
+
+inline constexpr const char* CONTROL_RESUMED =
+"CONTROL|RESUMED";
+
+inline constexpr const char* CONTROL_STOPPED =
+"CONTROL|STOPPED";
+
+
+// ==================================================
+// TelemetryData -> UDP payload
+// ==================================================
 
 inline std::string serializeTelemetry(
     const TelemetryData& telemetry
@@ -19,6 +33,10 @@ inline std::string serializeTelemetry(
         std::to_string(telemetry.sequenceNumber);
 }
 
+
+// ==================================================
+// UDP payload -> TelemetryData
+// ==================================================
 
 inline bool deserializeTelemetry(
     const std::string& payload,
@@ -54,11 +72,21 @@ inline bool deserializeTelemetry(
 
     try
     {
-        telemetry.truckId = truckId;
-        telemetry.speed = std::stod(speed);
-        telemetry.rpm = std::stoi(rpm);
-        telemetry.fuel = std::stod(fuel);
-        telemetry.gear = std::stoi(gear);
+        telemetry.truckId =
+            truckId;
+
+        telemetry.speed =
+            std::stod(speed);
+
+        telemetry.rpm =
+            std::stoi(rpm);
+
+        telemetry.fuel =
+            std::stod(fuel);
+
+        telemetry.gear =
+            std::stoi(gear);
+
         telemetry.sequenceNumber =
             std::stoll(sequenceNumber);
     }

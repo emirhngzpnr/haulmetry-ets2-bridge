@@ -1,16 +1,24 @@
 ﻿#include "telemetry-model.h"
 #include "telemetry-wire.h"
 
-#include <curl/curl.h>
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <curl/curl.h>
+
+#include <chrono>
 #include <iostream>
 #include <string>
 
 
-static constexpr unsigned short UDP_PORT = 49000;
+static constexpr unsigned short UDP_PORT =
+49000;
+
+static constexpr int RECEIVE_TIMEOUT_MS =
+1000;
+
+static constexpr int SOURCE_TIMEOUT_SECONDS =
+5;
 
 
 // ==================================================
@@ -27,20 +35,25 @@ size_t writeCallback(
     const size_t totalSize =
         size * nmemb;
 
+
     auto* response =
-        static_cast<std::string*>(userData);
+        static_cast<std::string*>(
+            userData
+            );
+
 
     response->append(
         contents,
         totalSize
     );
 
+
     return totalSize;
 }
 
 
 // ==================================================
-// TelemetryData -> backend JSON
+// TelemetryData -> JSON
 // ==================================================
 
 std::string toJson(
@@ -49,19 +62,45 @@ std::string toJson(
 {
     return
         "{"
-        "\"truckId\":\"" + telemetry.truckId + "\","
-        "\"speed\":" + std::to_string(telemetry.speed) + ","
-        "\"rpm\":" + std::to_string(telemetry.rpm) + ","
-        "\"fuel\":" + std::to_string(telemetry.fuel) + ","
-        "\"gear\":" + std::to_string(telemetry.gear) + ","
+        "\"truckId\":\"" +
+        telemetry.truckId +
+        "\","
+
+        "\"speed\":" +
+        std::to_string(
+            telemetry.speed
+        ) +
+        ","
+
+        "\"rpm\":" +
+        std::to_string(
+            telemetry.rpm
+        ) +
+        ","
+
+        "\"fuel\":" +
+        std::to_string(
+            telemetry.fuel
+        ) +
+        ","
+
+        "\"gear\":" +
+        std::to_string(
+            telemetry.gear
+        ) +
+        ","
+
         "\"sequenceNumber\":" +
-        std::to_string(telemetry.sequenceNumber) +
+        std::to_string(
+            telemetry.sequenceNumber
+        ) +
+
         "}";
 }
 
 
 // ==================================================
-// Send telemetry to Spring Boot
+// HTTP -> Spring Boot
 // ==================================================
 
 bool sendTelemetry(
@@ -70,6 +109,7 @@ bool sendTelemetry(
 {
     CURL* curl =
         curl_easy_init();
+
 
     if (curl == nullptr)
     {
@@ -82,12 +122,16 @@ bool sendTelemetry(
 
 
     const std::string json =
-        toJson(telemetry);
+        toJson(
+            telemetry
+        );
 
     std::string responseBody;
 
 
-    curl_slist* headers = nullptr;
+    curl_slist* headers =
+        nullptr;
+
 
     headers =
         curl_slist_append(
@@ -134,8 +178,6 @@ bool sendTelemetry(
         &responseBody
     );
 
-    // Backend is local.
-    // We intentionally keep the timeouts short.
     curl_easy_setopt(
         curl,
         CURLOPT_CONNECTTIMEOUT,
@@ -150,13 +192,16 @@ bool sendTelemetry(
 
 
     const CURLcode result =
-        curl_easy_perform(curl);
+        curl_easy_perform(
+            curl
+        );
 
 
     long httpCode = 0;
 
 
-    if (result == CURLE_OK)
+    if (result ==
+        CURLE_OK)
     {
         curl_easy_getinfo(
             curl,
@@ -166,14 +211,18 @@ bool sendTelemetry(
     }
 
 
-    bool success = false;
+    bool success =
+        false;
 
 
-    if (result != CURLE_OK)
+    if (result !=
+        CURLE_OK)
     {
         std::cerr
             << "HTTP request failed: "
-            << curl_easy_strerror(result)
+            << curl_easy_strerror(
+                result
+            )
             << std::endl;
     }
     else if (
@@ -199,7 +248,9 @@ bool sendTelemetry(
             << telemetry.sequenceNumber
             << std::endl;
 
-        success = true;
+
+        success =
+            true;
     }
     else
     {
@@ -209,6 +260,7 @@ bool sendTelemetry(
             << " | sequence="
             << telemetry.sequenceNumber
             << std::endl;
+
 
         if (!responseBody.empty())
         {
@@ -220,8 +272,13 @@ bool sendTelemetry(
     }
 
 
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    curl_slist_free_all(
+        headers
+    );
+
+    curl_easy_cleanup(
+        curl
+    );
 
 
     return success;
@@ -229,22 +286,19 @@ bool sendTelemetry(
 
 
 // ==================================================
-// Main bridge process
+// Main bridge
 // ==================================================
 
 int main()
 {
-    // ----------------------------------------------
-    // Initialize libcurl
-    // ----------------------------------------------
-
     const CURLcode curlResult =
         curl_global_init(
             CURL_GLOBAL_DEFAULT
         );
 
 
-    if (curlResult != CURLE_OK)
+    if (curlResult !=
+        CURLE_OK)
     {
         std::cerr
             << "libcurl global initialization failed."
@@ -254,11 +308,8 @@ int main()
     }
 
 
-    // ----------------------------------------------
-    // Initialize Winsock
-    // ----------------------------------------------
-
     WSADATA wsaData{};
+
 
     const int wsaResult =
         WSAStartup(
@@ -280,10 +331,6 @@ int main()
     }
 
 
-    // ----------------------------------------------
-    // Create UDP socket
-    // ----------------------------------------------
-
     SOCKET udpSocket =
         socket(
             AF_INET,
@@ -292,7 +339,8 @@ int main()
         );
 
 
-    if (udpSocket == INVALID_SOCKET)
+    if (udpSocket ==
+        INVALID_SOCKET)
     {
         std::cerr
             << "Could not create UDP socket."
@@ -305,10 +353,53 @@ int main()
     }
 
 
+    // Wake recvfrom() every second so the bridge
+    // can detect a missing telemetry source.
+    const DWORD receiveTimeout =
+        RECEIVE_TIMEOUT_MS;
+
+
+    if (
+        setsockopt(
+            udpSocket,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            reinterpret_cast<
+            const char*
+            >(
+                &receiveTimeout
+                ),
+            sizeof(
+                receiveTimeout
+                )
+        ) == SOCKET_ERROR
+        )
+    {
+        std::cerr
+            << "Could not configure UDP receive timeout."
+            << std::endl;
+
+        closesocket(
+            udpSocket
+        );
+
+        WSACleanup();
+        curl_global_cleanup();
+
+        return 1;
+    }
+
+
     sockaddr_in address{};
 
-    address.sin_family = AF_INET;
-    address.sin_port = htons(UDP_PORT);
+    address.sin_family =
+        AF_INET;
+
+    address.sin_port =
+        htons(
+            UDP_PORT
+        );
+
 
     InetPtonA(
         AF_INET,
@@ -317,21 +408,24 @@ int main()
     );
 
 
-    // ----------------------------------------------
-    // Bind to localhost:49000
-    // ----------------------------------------------
-
     const int bindResult =
         bind(
             udpSocket,
-            reinterpret_cast<sockaddr*>(
+
+            reinterpret_cast<
+            sockaddr*
+            >(
                 &address
                 ),
-            sizeof(address)
+
+            sizeof(
+                address
+                )
         );
 
 
-    if (bindResult == SOCKET_ERROR)
+    if (bindResult ==
+        SOCKET_ERROR)
     {
         std::cerr
             << "Could not bind UDP socket to port "
@@ -339,7 +433,10 @@ int main()
             << "."
             << std::endl;
 
-        closesocket(udpSocket);
+        closesocket(
+            udpSocket
+        );
+
         WSACleanup();
         curl_global_cleanup();
 
@@ -361,9 +458,19 @@ int main()
         << std::endl;
 
 
-    // ----------------------------------------------
-    // Receive telemetry continuously
-    // ----------------------------------------------
+    bool sourcePaused =
+        false;
+
+    bool sourceInterrupted =
+        false;
+
+    bool hasReceivedTelemetry =
+        false;
+
+
+    auto lastTelemetryTime =
+        std::chrono::steady_clock::now();
+
 
     while (true)
     {
@@ -381,11 +488,69 @@ int main()
             );
 
 
-        if (receivedBytes == SOCKET_ERROR)
+        // ==================================================
+        // No UDP packet received
+        // ==================================================
+
+        if (receivedBytes ==
+            SOCKET_ERROR)
         {
+            const int socketError =
+                WSAGetLastError();
+
+
+            if (socketError ==
+                WSAETIMEDOUT)
+            {
+                if (
+                    hasReceivedTelemetry &&
+                    !sourcePaused &&
+                    !sourceInterrupted
+                    )
+                {
+                    const auto now =
+                        std::chrono::
+                        steady_clock::now();
+
+
+                    const auto silence =
+                        std::chrono::
+                        duration_cast<
+                        std::chrono::seconds
+                        >(
+                            now -
+                            lastTelemetryTime
+                        );
+
+
+                    if (
+                        silence.count() >=
+                        SOURCE_TIMEOUT_SECONDS
+                        )
+                    {
+                        sourceInterrupted =
+                            true;
+
+
+                        std::cerr
+                            << "Telemetry source interrupted. "
+                            << "No data received for "
+                            << SOURCE_TIMEOUT_SECONDS
+                            << " seconds."
+                            << std::endl;
+                    }
+                }
+
+
+                continue;
+            }
+
+
             std::cerr
-                << "UDP receive failed."
+                << "UDP receive failed. Error: "
+                << socketError
                 << std::endl;
+
 
             continue;
         }
@@ -396,6 +561,84 @@ int main()
             receivedBytes
         );
 
+
+        // ==================================================
+        // PAUSE control message
+        // ==================================================
+
+        if (payload ==
+            CONTROL_PAUSED)
+        {
+            sourcePaused =
+                true;
+
+            sourceInterrupted =
+                false;
+
+
+            std::cout
+                << "Telemetry source paused."
+                << std::endl;
+
+
+            continue;
+        }
+
+
+        // ==================================================
+        // RESUME control message
+        // ==================================================
+
+        if (payload ==
+            CONTROL_RESUMED)
+        {
+            sourcePaused =
+                false;
+
+            sourceInterrupted =
+                false;
+
+
+            lastTelemetryTime =
+                std::chrono::
+                steady_clock::now();
+
+
+            std::cout
+                << "Telemetry source resumed."
+                << std::endl;
+
+
+            continue;
+        }
+        // ==================================================
+        // STOPPED control message
+        // ==================================================
+
+        if (payload ==
+            CONTROL_STOPPED)
+        {
+            sourcePaused =
+                false;
+
+            sourceInterrupted =
+                true;
+
+            hasReceivedTelemetry =
+                false;
+
+
+            std::cout
+                << "Telemetry source stopped."
+                << std::endl;
+
+
+            continue;
+        }
+
+        // ==================================================
+        // Telemetry packet
+        // ==================================================
 
         TelemetryData telemetry{};
 
@@ -410,8 +653,35 @@ int main()
                 << payload
                 << std::endl;
 
+
             continue;
         }
+
+
+        const auto now =
+            std::chrono::
+            steady_clock::now();
+
+
+        if (sourceInterrupted)
+        {
+            std::cout
+                << "Telemetry source restored."
+                << std::endl;
+        }
+
+
+        sourcePaused =
+            false;
+
+        sourceInterrupted =
+            false;
+
+        hasReceivedTelemetry =
+            true;
+
+        lastTelemetryTime =
+            now;
 
 
         sendTelemetry(
@@ -420,8 +690,9 @@ int main()
     }
 
 
-    // Normally unreachable in this first version.
-    closesocket(udpSocket);
+    closesocket(
+        udpSocket
+    );
 
     WSACleanup();
 
