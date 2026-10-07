@@ -1,4 +1,4 @@
-﻿#include "telemetry-model.h"
+#include "telemetry-model.h"
 #include "telemetry-wire.h"
 
 #include <winsock2.h>
@@ -64,6 +64,10 @@ std::string toJson(
         "{"
         "\"truckId\":\"" +
         telemetry.truckId +
+        "\","
+
+        "\"sessionId\":\"" +
+        telemetry.sessionId +
         "\","
 
         "\"speed\":" +
@@ -235,6 +239,8 @@ bool sendTelemetry(
             << httpCode
             << " | "
             << telemetry.truckId
+            << " | session="
+            << telemetry.sessionId
             << " | speed="
             << telemetry.speed
             << " km/h"
@@ -257,6 +263,8 @@ bool sendTelemetry(
         std::cerr
             << "Backend returned HTTP "
             << httpCode
+            << " | session="
+            << telemetry.sessionId
             << " | sequence="
             << telemetry.sequenceNumber
             << std::endl;

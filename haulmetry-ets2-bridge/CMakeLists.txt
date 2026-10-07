@@ -87,6 +87,7 @@ target_link_libraries(
     PRIVATE
 
     ws2_32
+    ole32
 )
 
 

@@ -6,6 +6,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <objbase.h>
 
 #include <chrono>
 #include <cmath>
@@ -39,6 +40,8 @@ static auto lastSendTime =
 std::chrono::steady_clock::now();
 
 static std::int64_t sequenceNumber = 1;
+
+static std::string sessionId;
 
 static bool telemetryPaused = true;
 
@@ -93,6 +96,8 @@ TelemetryData mapTelemetry(
     const LiveTelemetry& source,
     std::int64_t sequence
 );
+
+std::string generateSessionId();
 
 bool initializeUdp();
 
@@ -231,6 +236,7 @@ TelemetryData mapTelemetry(
     return TelemetryData
     {
         TRUCK_ID,
+        sessionId,
 
         std::fabs(
             static_cast<double>(
@@ -260,6 +266,34 @@ TelemetryData mapTelemetry(
 // ==================================================
 // UDP initialization
 // ==================================================
+
+std::string generateSessionId()
+{
+    GUID guid{};
+    if (FAILED(CoCreateGuid(&guid)))
+    {
+        return {};
+    }
+
+    char buffer[37]{};
+    std::snprintf(
+        buffer, sizeof(buffer),
+        "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        static_cast<unsigned int>(guid.Data1),
+        static_cast<unsigned int>(guid.Data2),
+        static_cast<unsigned int>(guid.Data3),
+        static_cast<unsigned int>(guid.Data4[0]),
+        static_cast<unsigned int>(guid.Data4[1]),
+        static_cast<unsigned int>(guid.Data4[2]),
+        static_cast<unsigned int>(guid.Data4[3]),
+        static_cast<unsigned int>(guid.Data4[4]),
+        static_cast<unsigned int>(guid.Data4[5]),
+        static_cast<unsigned int>(guid.Data4[6]),
+        static_cast<unsigned int>(guid.Data4[7])
+    );
+    return buffer;
+}
+
 
 bool initializeUdp()
 {
@@ -464,6 +498,28 @@ SCSAPI_RESULT scs_telemetry_init(
         "Haulmetry telemetry plugin initialized."
     );
 
+
+    sessionId = generateSessionId();
+    if (sessionId.empty())
+    {
+        gameLog(
+            SCS_LOG_TYPE_error,
+            "Haulmetry could not generate telemetry session ID."
+        );
+        return SCS_RESULT_generic_error;
+    }
+
+    sequenceNumber = 1;
+    telemetry = {};
+    telemetryPaused = true;
+    lastSendTime = std::chrono::steady_clock::now();
+
+    char sessionBuffer[256]{};
+    std::snprintf(
+        sessionBuffer, sizeof(sessionBuffer),
+        "Haulmetry telemetry session created: %s", sessionId.c_str()
+    );
+    gameLog(SCS_LOG_TYPE_message, sessionBuffer);
 
     if (!initializeUdp())
     {
@@ -674,12 +730,7 @@ SCSAPI_VOID scs_telemetry_shutdown(void)
     }
 
 
-    // Tell the bridge that ETS2/plugin is shutting down
-    // intentionally before closing the UDP socket.
-    sendPayloadToBridge(
-        CONTROL_STOPPED
-    );
-
+    sendPayloadToBridge(CONTROL_STOPPED);
 
     shutdownUdp();
 
@@ -774,6 +825,7 @@ SCSAPI_VOID telemetryFrameEnd(
 
         "Haulmetry SENT | "
         "Truck: %s | "
+        "Session: %s | "
         "Speed: %.1f km/h | "
         "RPM: %d | "
         "Fuel: %.1f L | "
@@ -781,6 +833,7 @@ SCSAPI_VOID telemetryFrameEnd(
         "Sequence: %lld",
 
         mappedTelemetry.truckId.c_str(),
+        mappedTelemetry.sessionId.c_str(),
         mappedTelemetry.speed,
         mappedTelemetry.rpm,
         mappedTelemetry.fuel,

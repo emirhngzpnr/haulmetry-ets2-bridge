@@ -26,6 +26,7 @@ inline std::string serializeTelemetry(
 {
     return
         telemetry.truckId + "|" +
+        telemetry.sessionId + "|" +
         std::to_string(telemetry.speed) + "|" +
         std::to_string(telemetry.rpm) + "|" +
         std::to_string(telemetry.fuel) + "|" +
@@ -46,6 +47,7 @@ inline bool deserializeTelemetry(
     std::istringstream stream(payload);
 
     std::string truckId;
+    std::string sessionId;
     std::string speed;
     std::string rpm;
     std::string fuel;
@@ -54,6 +56,7 @@ inline bool deserializeTelemetry(
 
 
     if (!std::getline(stream, truckId, '|') ||
+        !std::getline(stream, sessionId, '|') ||
         !std::getline(stream, speed, '|') ||
         !std::getline(stream, rpm, '|') ||
         !std::getline(stream, fuel, '|') ||
@@ -64,7 +67,8 @@ inline bool deserializeTelemetry(
     }
 
 
-    if (truckId.empty())
+    if (truckId.empty() ||
+        sessionId.empty())
     {
         return false;
     }
@@ -74,6 +78,9 @@ inline bool deserializeTelemetry(
     {
         telemetry.truckId =
             truckId;
+
+        telemetry.sessionId =
+            sessionId;
 
         telemetry.speed =
             std::stod(speed);
